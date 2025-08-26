@@ -1,0 +1,47 @@
+{
+  "$schema": "https://getcomposer.org/schema.json",
+  "name": "streeboga/genesis-laravel",
+  "description": "Laravel package for integrating the Genesis Platform SDK (streeboga/genesis) into Laravel apps.",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.2",
+    "illuminate/support": "^12.0",
+    "streeboga/genesis": "@dev"
+  },
+  "autoload": {
+    "psr-4": {
+      "Streeboga\\GenesisLaravel\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Streeboga\\GenesisLaravel\\Tests\\": "tests/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Streeboga\\GenesisLaravel\\GenesisServiceProvider"
+      ],
+      "aliases": {
+        "Genesis": "Streeboga\\GenesisLaravel\\Facades\\Genesis"
+      }
+    }
+  },
+  "config": {
+    "sort-packages": true
+  },
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "repositories": [
+    {
+      "type": "path",
+      "url": "../genesis"
+    }
+  ]
+}
+
+
+
+
