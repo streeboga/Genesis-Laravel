@@ -399,3 +399,7 @@ class TestController extends Controller
 3. Правильность UUID проекта
 4. Логи Laravel в storage/logs/laravel.log
 5. Статус очередей (если используются)
+
+
+
+
