@@ -3,6 +3,7 @@
 return [
     'api_key' => env('GENESIS_API_KEY', ''),
     'base_url' => env('GENESIS_BASE_URL', 'https://api.genesis.com/v1/'),
+    'project_uuid' => env('GENESIS_PROJECT_UUID', ''),
 
     'cache' => [
         'enabled' => env('GENESIS_CACHE_ENABLED', true),

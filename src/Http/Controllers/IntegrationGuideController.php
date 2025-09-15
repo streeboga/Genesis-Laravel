@@ -46,7 +46,7 @@ class IntegrationGuideController extends Controller
         $format = $request->get('format', 'html');
 
         // Если доступен шаблон INTEGRATION_GUIDE.md — используем его в качестве источника
-        $guidePath = __DIR__ . '/../../INTEGRATION_GUIDE.md';
+        $guidePath = __DIR__ . '/../../../INTEGRATION_GUIDE.md';
         if (is_file($guidePath) && is_readable($guidePath)) {
             $prefix = <<<MD
 # Genesis Integration Guide (Dynamic Credentials)
@@ -432,7 +432,7 @@ PROJECT_UUID={$credentials['project_uuid']}
        return response()->json(['status' => 'accepted']);
    });
 
-   // Защита маршрутов токеном
+   // Защита маршрутов токеном (genesis.auth регистрируется автоматически)
    Route::middleware('genesis.auth')->group(function () {
        Route::get('/protected', fn() => 'ok');
    });

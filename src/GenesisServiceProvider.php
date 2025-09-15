@@ -8,6 +8,7 @@ use Streeboga\Genesis\Config as SdkConfig;
 use Streeboga\Genesis\GenesisClient;
 use Streeboga\GenesisLaravel\Commands\GenesisSetupCommand;
 use Streeboga\GenesisLaravel\Commands\GenesisTestConnectionCommand;
+use Streeboga\GenesisLaravel\Middleware\GenesisAuthMiddleware;
 use Streeboga\GenesisLaravel\Services\GenesisCacheService;
 
 class GenesisServiceProvider extends ServiceProvider
@@ -57,6 +58,9 @@ class GenesisServiceProvider extends ServiceProvider
             ]);
         }
 
+        // Автоматическая регистрация genesis.auth middleware
+        $this->registerMiddleware();
+        
         $this->registerBladeDirectives();
     }
 
@@ -77,6 +81,17 @@ class GenesisServiceProvider extends ServiceProvider
         Blade::directive('endgenesisFeature', function () {
             return '<?php endif; ?>';
         });
+    }
+
+    /**
+     * Регистрация middleware для автоматического подключения
+     */
+    protected function registerMiddleware(): void
+    {
+        $router = $this->app['router'];
+        
+        // Регистрируем alias для middleware
+        $router->aliasMiddleware('genesis.auth', GenesisAuthMiddleware::class);
     }
 }
 
