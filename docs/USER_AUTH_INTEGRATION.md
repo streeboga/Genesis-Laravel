@@ -67,11 +67,11 @@ class CheckoutController extends Controller
         }
 
         $paymentUrl = Genesis::auth()->getPaymentUrl(
-            $session['data']['session_token'],
+            $session['session_token'], // Токен напрямую, не в data
             $request->plan_uuid
         );
 
-        return redirect($paymentUrl['data']['checkout_url']);
+        return redirect($paymentUrl['checkout_url']); // URL напрямую, не в data
     }
 }
 ```
@@ -149,12 +149,12 @@ class CheckoutController extends Controller
             }
 
             // Сохраняем токен сессии в сессии Laravel для отслеживания
-            session(['genesis_session_token' => $session['data']['session_token']]);
+            session(['genesis_session_token' => $session['session_token']]);
 
             return response()->json([
                 'success' => true,
-                'checkout_url' => $paymentResponse['data']['checkout_url'],
-                'session_expires_at' => $session['data']['expires_at']
+                'checkout_url' => $paymentResponse['checkout_url'],
+                'session_expires_at' => $session['expires_at']
             ]);
 
         } catch (\Exception $e) {

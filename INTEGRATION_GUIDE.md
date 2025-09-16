@@ -175,7 +175,495 @@ $response = Genesis::auth()->verifyOtp([
 $session = Genesis::auth()->getSession($sessionToken);
 ```
 
-### 2. Управление биллингом
+### 2. Авторизация и создание пользователей
+
+**ВАЖНО**: Перед созданием подписки и платежом необходимо создать пользователя в системе Genesis.
+
+#### ⚡ Упрощенное создание пользователя (РЕКОМЕНДУЕТСЯ)
+
+**Для большинства интеграций** достаточно простого подхода без OTP:
+
+```php
+use Streeboga\GenesisLaravel\Facades\Genesis;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+
+$projectId = env('GENESIS_PROJECT_UUID');
+
+/**
+ * Простое создание/получение пользователя по email
+ * Если пользователь существует - возвращаем его ID
+ * Если не существует - создаем нового и возвращаем ID
+ */
+public function getOrCreateUser(string $email, array $userData = []): array
+{
+    try {
+        DB::beginTransaction();
+        
+        $projectId = $this->getProjectId();
+        
+        // Проверяем существование пользователя
+        $existingUser = \App\Models\ProjectUser::where('email', $email)
+            ->where('project_id', $projectId)
+            ->first();
+            
+        if ($existingUser) {
+            DB::commit();
+            return [
+                'success' => true,
+                'user_uuid' => $existingUser->uuid,
+                'is_new' => false,
+                'user_data' => [
+                    'uuid' => $existingUser->uuid,
+                    'email' => $existingUser->email,
+                    'name' => $existingUser->name,
+                    'phone' => $existingUser->phone,
+                    'metadata' => $existingUser->metadata
+                ]
+            ];
+        }
+        
+        // Создаем нового пользователя
+        $userUuid = 'user-' . Str::uuid();
+        
+        $projectUser = \App\Models\ProjectUser::create([
+            'project_id' => $projectId,
+            'uuid' => $userUuid,
+            'email' => $email,
+            'name' => $userData['name'] ?? null,
+            'phone' => $userData['phone'] ?? null,
+            'metadata' => $userData['metadata'] ?? [],
+            'email_verified_at' => now() // Считаем автоматически верифицированным
+        ]);
+        
+        DB::commit();
+        
+        return [
+            'success' => true,
+            'user_uuid' => $userUuid,
+            'is_new' => true,
+            'user_data' => $projectUser->toArray()
+        ];
+        
+    } catch (Exception $e) {
+        DB::rollBack();
+        return [
+            'success' => false,
+            'message' => 'Ошибка создания пользователя: ' . $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Упрощенный метод для API endpoint
+ */
+public function createUserSimple(Request $request): JsonResponse
+{
+    $request->validate([
+        'email' => 'required|email',
+        'name' => 'sometimes|string|max:255',
+        'phone' => 'sometimes|string|max:20',
+        'metadata' => 'sometimes|array'
+    ]);
+    
+    $result = $this->getOrCreateUser(
+        $request->input('email'),
+        $request->only(['name', 'phone', 'metadata'])
+    );
+    
+    if ($result['success']) {
+        return response()->json([
+            'success' => true,
+            'user_uuid' => $result['user_uuid'],
+            'is_new' => $result['is_new'],
+            'message' => $result['is_new'] ? 'Пользователь создан' : 'Пользователь найден'
+        ]);
+    }
+    
+    return response()->json([
+        'success' => false,
+        'message' => $result['message']
+    ], 500);
+}
+
+private function getProjectId(): int
+{
+    static $projectId;
+    
+    if (!$projectId) {
+        $projectId = \App\Models\Project::where('uuid', env('GENESIS_PROJECT_UUID'))
+            ->value('id');
+    }
+    
+    return $projectId;
+}
+```
+
+#### 🔐 Создание пользователя через OTP (для сложных случаев)
+
+**Полный цикл авторизации:**
+
+```php
+use Streeboga\GenesisLaravel\Facades\Genesis;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+
+$projectId = env('GENESIS_PROJECT_UUID');
+
+/**
+ * Шаг 1: Создание пользователя и отправка OTP
+ */
+public function createUserAndSendOtp(array $userData): array
+{
+    try {
+        // Генерируем уникальный UUID для пользователя
+        $userUuid = $userData['user_uuid'] ?? 'user-' . Str::uuid();
+        
+        // Отправляем OTP через Genesis API
+        $otpResponse = Genesis::auth()->sendOtp([
+            'email' => $userData['email'],
+            'project_uuid' => $projectId,
+            'user_uuid' => $userUuid,
+            'name' => $userData['name'] ?? null,
+            'phone' => $userData['phone'] ?? null,
+            'language' => $userData['language'] ?? 'ru',
+            'metadata' => $userData['metadata'] ?? []
+        ]);
+        
+        return [
+            'success' => true,
+            'user_uuid' => $userUuid,
+            'message' => 'OTP код отправлен на email',
+            'data' => $otpResponse
+        ];
+        
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'message' => 'Ошибка создания пользователя: ' . $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Шаг 2: Верификация OTP и активация пользователя
+ */
+public function verifyOtpAndActivateUser(string $userUuid, string $otpCode): array
+{
+    try {
+        // Верифицируем OTP
+        $verifyResponse = Genesis::auth()->verifyOtp([
+            'user_uuid' => $userUuid,
+            'project_uuid' => $projectId,
+            'otp_code' => $otpCode
+        ]);
+        
+        if ($verifyResponse['success']) {
+            return [
+                'success' => true,
+                'user_uuid' => $userUuid,
+                'message' => 'Пользователь успешно активирован',
+                'user_data' => $verifyResponse['user'] ?? null
+            ];
+        }
+        
+        return [
+            'success' => false,
+            'message' => 'Неверный OTP код'
+        ];
+        
+    } catch (Exception $e) {
+        return [
+            'success' => false,
+            'message' => 'Ошибка верификации: ' . $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Шаг 3: Получение информации о пользователе
+ */
+public function getUserInfo(string $userUuid): ?array
+{
+    try {
+        // Проверяем существование пользователя в локальной БД
+        $projectUser = \App\Models\ProjectUser::where('uuid', $userUuid)
+            ->where('project_id', $this->getProjectId())
+            ->first();
+            
+        if ($projectUser) {
+            return [
+                'uuid' => $projectUser->uuid,
+                'email' => $projectUser->email,
+                'name' => $projectUser->name,
+                'phone' => $projectUser->phone,
+                'is_verified' => $projectUser->email_verified_at !== null,
+                'metadata' => $projectUser->metadata
+            ];
+        }
+        
+        return null;
+        
+    } catch (Exception $e) {
+        Log::error('Error getting user info', ['user_uuid' => $userUuid, 'error' => $e->getMessage()]);
+        return null;
+    }
+}
+```
+
+#### 🔑 Альтернативный способ - прямое создание пользователя
+
+Если вы не используете OTP, можно создать пользователя напрямую:
+
+```php
+/**
+ * Создание пользователя без OTP (для внутренних систем)
+ */
+public function createUserDirectly(array $userData): array
+{
+    try {
+        DB::beginTransaction();
+        
+        $userUuid = $userData['user_uuid'] ?? 'user-' . Str::uuid();
+        
+        // Создаем пользователя в локальной БД
+        $projectUser = \App\Models\ProjectUser::firstOrCreate(
+            [
+                'project_id' => $this->getProjectId(),
+                'uuid' => $userUuid
+            ],
+            [
+                'email' => $userData['email'],
+                'name' => $userData['name'] ?? null,
+                'phone' => $userData['phone'] ?? null,
+                'metadata' => $userData['metadata'] ?? [],
+                'email_verified_at' => now() // Считаем сразу верифицированным
+            ]
+        );
+        
+        DB::commit();
+        
+        return [
+            'success' => true,
+            'user_uuid' => $userUuid,
+            'user_data' => $projectUser->toArray()
+        ];
+        
+    } catch (Exception $e) {
+        DB::rollBack();
+        return [
+            'success' => false,
+            'message' => 'Ошибка создания пользователя: ' . $e->getMessage()
+        ];
+    }
+}
+
+private function getProjectId(): int
+{
+    static $projectId;
+    
+    if (!$projectId) {
+        $projectId = \App\Models\Project::where('uuid', env('GENESIS_PROJECT_UUID'))
+            ->value('id');
+    }
+    
+    return $projectId;
+}
+```
+
+#### 📋 Пример упрощенного цикла: Email → Подписка → Оплата
+
+```php
+/**
+ * УПРОЩЕННЫЙ цикл: email → создание пользователя → подписка → платеж
+ * Весь процесс в одном запросе без OTP!
+ */
+public function createSubscriptionSimple(Request $request): JsonResponse
+{
+    $request->validate([
+        'email' => 'required|email',
+        'plan_uuid' => 'required|string',
+        'name' => 'sometimes|string',
+        'phone' => 'sometimes|string',
+        'payment_method' => 'sometimes|in:cloudpayments,robokassa'
+    ]);
+    
+    try {
+        DB::beginTransaction();
+        
+        // 1. Создаем/находим пользователя по email (БЕЗ OTP!)
+        $userResult = $this->getOrCreateUser(
+            $request->input('email'),
+            $request->only(['name', 'phone'])
+        );
+        
+        if (!$userResult['success']) {
+            throw new Exception($userResult['message']);
+        }
+        
+        $userUuid = $userResult['user_uuid'];
+        $projectId = env('GENESIS_PROJECT_UUID');
+        
+        // 2. Создаем подписку
+        $subscription = Genesis::billing()->createSubscription($projectId, [
+            'user_uuid' => $userUuid,
+            'plan_uuid' => $request->input('plan_uuid'),
+            'email' => $request->input('email'),
+            'name' => $request->input('name'),
+            'phone' => $request->input('phone')
+        ]);
+        
+        // 3. Инициируем платеж
+        $payment = Genesis::billing()->initiatePayment($projectId, [
+            'user_uuid' => $userUuid,
+            'subscription_uuid' => $subscription['subscription']['uuid'],
+            'amount' => $subscription['subscription']['plan']['price'],
+            'currency' => $subscription['subscription']['plan']['currency'],
+            'description' => "Оплата плана: {$subscription['subscription']['plan']['name']}",
+            'payment_method' => $request->input('payment_method', 'cloudpayments'),
+            'return_url' => route('payment.success'),
+            'cancel_url' => route('payment.cancel')
+        ]);
+        
+        DB::commit();
+        
+        return response()->json([
+            'success' => true,
+            'user_uuid' => $userUuid,
+            'is_new_user' => $userResult['is_new'],
+            'payment_url' => $payment['payment_url'],
+            'subscription_uuid' => $subscription['subscription']['uuid'],
+            'transaction_uuid' => $payment['transaction']['uuid'],
+            'message' => $userResult['is_new'] 
+                ? 'Пользователь создан и подписка оформлена'
+                : 'Подписка оформлена для существующего пользователя'
+        ]);
+        
+    } catch (Exception $e) {
+        DB::rollBack();
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage()
+        ], 500);
+    }
+}
+```
+
+#### 📋 Пример полного цикла с OTP (для сложных случаев): Регистрация → Верификация → Оплата
+
+```php
+/**
+ * Полный цикл с OTP: создание пользователя → верификация → подписка → платеж
+ * (используйте только если нужна дополнительная безопасность)
+ */
+public function processUserSubscriptionWithOtp(Request $request): JsonResponse
+{
+    try {
+        DB::beginTransaction();
+        
+        // 1. Создание пользователя и отправка OTP
+        $userData = [
+            'email' => $request->input('email'),
+            'name' => $request->input('name'),
+            'phone' => $request->input('phone'),
+            'user_uuid' => 'user-' . Str::uuid()
+        ];
+        
+        $otpResult = $this->createUserAndSendOtp($userData);
+        
+        if (!$otpResult['success']) {
+            throw new Exception($otpResult['message']);
+        }
+        
+        // Сохраняем данные пользователя в сессии для следующего шага
+        session()->put('pending_user', $userData);
+        
+        DB::commit();
+        
+        return response()->json([
+            'success' => true,
+            'step' => 'otp_verification',
+            'user_uuid' => $userData['user_uuid'],
+            'message' => 'OTP код отправлен. Введите его для продолжения.'
+        ]);
+        
+    } catch (Exception $e) {
+        DB::rollBack();
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage()
+        ], 500);
+    }
+}
+
+/**
+ * Верификация OTP и создание подписки
+ */
+public function verifyOtpAndSubscribe(Request $request): JsonResponse
+{
+    $request->validate([
+        'user_uuid' => 'required|string',
+        'otp_code' => 'required|string|size:6',
+        'plan_uuid' => 'required|string'
+    ]);
+    
+    try {
+        DB::beginTransaction();
+        
+        // 1. Верифицируем OTP
+        $verifyResult = $this->verifyOtpAndActivateUser(
+            $request->input('user_uuid'),
+            $request->input('otp_code')
+        );
+        
+        if (!$verifyResult['success']) {
+            throw new Exception($verifyResult['message']);
+        }
+        
+        // 2. Создаем подписку
+        $subscription = Genesis::billing()->createSubscription(env('GENESIS_PROJECT_UUID'), [
+            'user_uuid' => $request->input('user_uuid'),
+            'plan_uuid' => $request->input('plan_uuid'),
+            'email' => session('pending_user.email'),
+            'name' => session('pending_user.name'),
+            'phone' => session('pending_user.phone')
+        ]);
+        
+        // 3. Инициируем платеж
+        $payment = Genesis::billing()->initiatePayment(env('GENESIS_PROJECT_UUID'), [
+            'user_uuid' => $request->input('user_uuid'),
+            'subscription_uuid' => $subscription['subscription']['uuid'],
+            'amount' => $subscription['subscription']['plan']['price'],
+            'currency' => $subscription['subscription']['plan']['currency'],
+            'description' => "Оплата плана: {$subscription['subscription']['plan']['name']}",
+            'payment_method' => $request->input('payment_method', 'cloudpayments'),
+            'return_url' => route('payment.success'),
+            'cancel_url' => route('payment.cancel')
+        ]);
+        
+        // Очищаем временные данные
+        session()->forget('pending_user');
+        
+        DB::commit();
+        
+        return response()->json([
+            'success' => true,
+            'payment_url' => $payment['payment_url'],
+            'subscription_uuid' => $subscription['subscription']['uuid'],
+            'transaction_uuid' => $payment['transaction']['uuid']
+        ]);
+        
+    } catch (Exception $e) {
+        DB::rollBack();
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage()
+        ], 500);
+    }
+}
+```
+
+### 3. Управление биллингом
 
 ```php
 use Streeboga\GenesisLaravel\Facades\Genesis;
@@ -399,18 +887,35 @@ public function createPaymentLink(string $planUuid, array $userData, array $opti
     try {
         DB::beginTransaction();
         
-        // 1. Создание подписки
+        // 1. ⚡ УПРОЩЕННЫЙ ПОДХОД: Создаем/находим пользователя без OTP
+        $projectIdInt = \App\Models\Project::where('uuid', $projectId)->value('id');
+        
+        $user = \App\Models\ProjectUser::firstOrCreate(
+            [
+                'email' => $userData['email'],
+                'project_id' => $projectIdInt
+            ],
+            [
+                'uuid' => $userData['user_uuid'] ?? 'user-' . \Illuminate\Support\Str::uuid(),
+                'name' => $userData['name'] ?? null,
+                'phone' => $userData['phone'] ?? null,
+                'metadata' => $userData['metadata'] ?? [],
+                'email_verified_at' => now()
+            ]
+        );
+        
+        // 2. Создание подписки
         $subscription = Genesis::billing()->createSubscription($projectId, [
-            'user_uuid' => $userData['user_uuid'],
+            'user_uuid' => $user->uuid,
             'plan_uuid' => $planUuid,
             'email' => $userData['email'],
-            'name' => $userData['name'],
+            'name' => $userData['name'] ?? null,
             'phone' => $userData['phone'] ?? null,
         ]);
         
-        // 2. Инициация платежа  
+        // 3. Инициация платежа  
         $payment = Genesis::billing()->initiatePayment($projectId, [
-            'user_uuid' => $userData['user_uuid'],
+            'user_uuid' => $user->uuid,
             'subscription_uuid' => $subscription['subscription']['uuid'],
             'amount' => $subscription['subscription']['plan']['price'],
             'currency' => $subscription['subscription']['plan']['currency'],
@@ -1415,6 +1920,10 @@ echo "✅ Развертывание завершено!"
 
 ### Функциональность
 - [ ] Реализована базовая авторизация (User Auth API или стандартная)
+- [ ] **⚡ РЕКОМЕНДУЕТСЯ**: Настроено упрощенное создание пользователей без OTP
+- [ ] **⚡ РЕКОМЕНДУЕТСЯ**: Протестирован упрощенный цикл: email → пользователь → подписка → оплата
+- [ ] **ДОПОЛНИТЕЛЬНО**: Настроено создание пользователей через OTP (для сложных случаев)
+- [ ] **ДОПОЛНИТЕЛЬНО**: Протестирована верификация OTP кодов
 - [ ] Настроен хотя бы один маршрут с защитой
 - [ ] Протестирован биллинг (получение планов)
 - [ ] **НОВОЕ**: Протестирован полный цикл создания подписки и платежа
@@ -1469,7 +1978,66 @@ php artisan tinker
 >>> Genesis::billing()->listPlans('test-project-uuid')
 ```
 
-**4. Тестирование платежного API**
+**4. Тестирование авторизации пользователей**
+
+**⚡ Тестирование УПРОЩЕННОГО подхода (РЕКОМЕНДУЕТСЯ):**
+```bash
+# Тестирование создания/поиска пользователя по email
+php artisan tinker
+
+# Создание нового пользователя
+>>> $projectId = App\Models\Project::where('uuid', 'your-project-uuid')->value('id');
+>>> $user = App\Models\ProjectUser::firstOrCreate(
+...     ['email' => 'test@example.com', 'project_id' => $projectId],
+...     ['uuid' => 'user-' . Str::uuid(), 'name' => 'Test User', 'email_verified_at' => now()]
+... );
+>>> echo "User UUID: " . $user->uuid;
+
+# Проверка существующего пользователя
+>>> $existing = App\Models\ProjectUser::where('email', 'test@example.com')->first();
+>>> if ($existing) echo "Найден: " . $existing->uuid;
+
+# Тестирование полного цикла без OTP
+>>> $email = 'simple-test-' . time() . '@example.com';
+>>> $projectUuid = 'your-project-uuid';
+>>> $planUuid = 'your-plan-uuid';
+
+# Имитация упрощенного создания подписки
+>>> $result = [
+...     'email' => $email,
+...     'user_uuid' => 'user-' . Str::uuid(),
+...     'plan_uuid' => $planUuid,
+...     'is_new' => true
+... ];
+>>> echo "Результат: " . json_encode($result);
+```
+
+**🔐 Тестирование OTP подхода (для сложных случаев):**
+```bash
+# Тестирование создания пользователя и отправки OTP
+php artisan tinker
+>>> Genesis::auth()->sendOtp([
+...     'email' => 'test@example.com',
+...     'project_uuid' => 'your-project-uuid',
+...     'user_uuid' => 'test-user-123',
+...     'name' => 'Test User'
+... ])
+
+# Тестирование верификации OTP (используйте код "123456" для тестирования)
+>>> Genesis::auth()->verifyOtp([
+...     'user_uuid' => 'test-user-123',
+...     'project_uuid' => 'your-project-uuid',
+...     'otp_code' => '123456'
+... ])
+
+# Проверка создания пользователя в локальной БД
+>>> App\Models\ProjectUser::where('uuid', 'test-user-123')->first()
+
+# Проверка маршрутов авторизации
+php artisan route:list --path="auth"
+```
+
+**5. Тестирование платежного API**
 ```bash
 # Проверка доступности платежных методов
 php artisan tinker
